@@ -50,17 +50,35 @@ def load_or_train():
         return model, cols, None, None
 
     # 2) Train quick model from CSV if present
-    if os.path.exists(CSV_PATH):
-        df = pd.read_csv(CSV_PATH)
-        tgt = guess_target(df)
-        if tgt is None:
-            raise RuntimeError("Target column not found, rename your label to 'dropout'")
-        # Normalize label if strings
-        if df[tgt].dtype == object:
-            df[tgt] = df[tgt].astype(str).str.strip().str.lower().map({"yes":1, "y":1, "true":1, "1":1}).fillna(df[tgt]).astype(int)
-        X, y, num, cat = split_cols(df, tgt)
-        pipe = build_pipe(num, cat).fit(X, y)
-        return pipe, list(X.columns), {"trained_on_csv": True}, tgt
+if os.path.exists(CSV_PATH):
+    df = pd.read_csv(CSV_PATH)
+
+    tgt = guess_target(df)
+    if tgt is None:
+        raise RuntimeError("Target column not found, rename your label to 'dropout'")
+
+    # Normalize label if strings
+    if df[tgt].dtype == object:
+        df[tgt] = (
+            df[tgt]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .map({"yes": 1, "y": 1, "true": 1, "1": 1, "no": 0, "n": 0, "false": 0, "0": 0})
+        )
+
+    # Drop rows where target is missing
+    df = df.dropna(subset=[tgt])
+
+    # Replace infinities with NaN, then drop any remaining NaNs in features
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.dropna()
+
+    X, y, num, cat = split_cols(df, tgt)
+    pipe = build_pipe(num, cat).fit(X, y)
+    return pipe, list(X.columns), {"trained_on_csv": True}, tgt
+
+
 
     # 3) Nothing found
     return None, None, None, None
@@ -128,4 +146,5 @@ else:
         st.dataframe(rep, use_container_width=True)
     else:
         st.write("No evaluation dataset available.")
+
 
