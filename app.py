@@ -16,7 +16,7 @@ DATA_DIR = "data"
 MODEL_PATH = os.path.join(MODEL_DIR, "logit_model.pkl")
 COLS_PATH = os.path.join(MODEL_DIR, "columns.json")
 CSV_PATH = os.path.join(DATA_DIR, "combined_data.csv")
-LIKELY_TARGETS = ["dropout", "Dropout", "is_dropout", "label", "target"]
+LIKELY_TARGETS = ["dropout", "DropOut", "Dropout", "is_dropout", "label", "target"]
 LIKELY_IDS = ["student_id", "StudentID", "id"]
 
 def guess_target(df):
@@ -128,3 +128,4 @@ else:
         st.dataframe(rep, use_container_width=True)
     else:
         st.write("No evaluation dataset available.")
+
