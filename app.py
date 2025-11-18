@@ -11,30 +11,42 @@ st.set_page_config(page_title="Dropout Dashboard", layout="wide")
 
 CSV_PATH = "data/combined_data.csv"
 
-TARGET_NAMES = ["dropout", "DropOut", "Dropout", "label", "target"]
+# Label names we will accept for dropout
+TARGET_NAMES = ["DropOut", "dropout", "Dropout", "label", "target"]
 
-# Variables from Appendix A (adjust here if your list changes)
+# Core predictors for the dropout logistic model from the paper
+# (RIT, discipline, repeater, percent credits, sense of belonging)
 APPX_FEATURES = [
-    "present_pct",
-    "HS_PctEarned",
+    "MAP_TestRITScore",
+    "num_discipline",       # we will build this if needed
     "HS_IsRepeater",
-    "MAP_TestPercentile",
-    "num_discipline",         
+    "HS_PctEarned",
     "HS_SenseofBelonging",
 ]
 
 
+# --------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------
 def risk_level(prob: float) -> str:
     """
-    Map probability to risk level.
-    Adjust thresholds here to match your paper if needed.
+    Map probability to risk category based on Table 12 in the paper:
+    [0.00, 0.20]  -> Low Risk
+    (0.20, 0.40]  -> Moderately Low Risk
+    (0.40, 0.60]  -> Moderate Risk
+    (0.60, 0.80]  -> Moderately High Risk
+    (0.80, 1.00]  -> High Risk
     """
-    if prob < 0.2:
-        return "Low"
-    elif prob < 0.5:
-        return "Medium"
+    if prob <= 0.20:
+        return "Low Risk"
+    elif prob <= 0.40:
+        return "Moderately Low Risk"
+    elif prob <= 0.60:
+        return "Moderate Risk"
+    elif prob <= 0.80:
+        return "Moderately High Risk"
     else:
-        return "High"
+        return "High Risk"
 
 
 @st.cache_resource
@@ -44,7 +56,7 @@ def load_and_train():
 
     df = pd.read_csv(CSV_PATH)
 
-    # find target column
+    # find dropout target column
     target = None
     for t in TARGET_NAMES:
         if t in df.columns:
@@ -53,7 +65,7 @@ def load_and_train():
     if target is None:
         return None, None, None, None
 
-    # build num_discipline from yearly columns if not already there
+    # build num_discipline from yearly columns if needed
     if "num_discipline" not in df.columns:
         disc_cols = [c for c in df.columns if c.startswith("num_discipline_")]
         if disc_cols:
@@ -61,17 +73,17 @@ def load_and_train():
         else:
             df["num_discipline"] = 0
 
-    # keep only Appendix A features that actually exist
+    # keep only features that actually exist
     feature_cols = [c for c in APPX_FEATURES if c in df.columns]
 
-    # clean data
+    # clean
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.fillna(0)
 
     X = df[feature_cols]
     y = df[target]
 
-    # convert target to 0/1 if it is strings
+    # convert target to 0 or 1 if it is strings
     if y.dtype == object:
         y = (
             y.astype(str)
@@ -81,11 +93,9 @@ def load_and_train():
             .astype(int)
         )
 
-    # numeric only, simple pipeline
+    # numeric only
     pre = ColumnTransformer(
-        transformers=[
-            ("num", "passthrough", feature_cols),
-        ],
+        transformers=[("num", "passthrough", feature_cols)],
         remainder="drop",
     )
 
@@ -104,25 +114,31 @@ def load_and_train():
 model, cols, target, full_df = load_and_train()
 
 if model is None:
-    st.error("Upload a CSV with a dropout column in data/combined_data.csv")
+    st.error("Upload a CSV with a dropout label in data/combined_data.csv")
     st.stop()
 
+# --------------------------------------------------------------------
+# Sidebar
+# --------------------------------------------------------------------
 st.sidebar.title("Dropout Dashboard")
 choice = st.sidebar.radio(
     "Choose view",
     ["Single Student", "Batch Scoring", "Model Report", "Credits and Repeats"],
 )
 
-# Single student
+# --------------------------------------------------------------------
+# Single Student view
+# --------------------------------------------------------------------
 if choice == "Single Student":
-    st.header("Single Student Prediction (Appendix A variables only)")
+    st.header("Single Student Prediction (Appendix A variables)")
 
     inputs = {}
     col1, col2 = st.columns(2)
 
     for i, c in enumerate(cols):
+        label = c.replace("_", " ")
         with (col1 if i % 2 == 0 else col2):
-            inputs[c] = st.text_input(c, "0")
+            inputs[c] = st.text_input(label, "0")
 
     if st.button("Predict"):
         row = {}
@@ -139,11 +155,25 @@ if choice == "Single Student":
         prob = float(model.predict_proba(df_input)[0, 1])
         level = risk_level(prob)
 
-        st.subheader(f"Risk level: **{level}**")
-        st.caption(f"(Predicted dropout probability: {prob:.3f})")
+        st.subheader(f"Risk level: {level}")
+        st.caption(f"Predicted dropout probability: {prob:.3f}")
         st.progress(prob)
 
-# Batch scoring
+        st.markdown(
+            """
+            **How to read this**  
+            - These risk bands follow the paper:  
+              - 0.00 to 0.20  Low Risk  
+              - 0.20 to 0.40  Moderately Low Risk  
+              - 0.40 to 0.60  Moderate Risk  
+              - 0.60 to 0.80  Moderately High Risk  
+              - 0.80 to 1.00  High Risk
+            """
+        )
+
+# --------------------------------------------------------------------
+# Batch Scoring
+# --------------------------------------------------------------------
 elif choice == "Batch Scoring":
     st.header("Batch Scoring")
 
@@ -157,7 +187,7 @@ elif choice == "Batch Scoring":
     if upload:
         df_up = pd.read_csv(upload)
 
-        # create num_discipline if needed
+        # rebuild num_discipline if needed
         if "num_discipline" not in df_up.columns:
             disc_cols = [c for c in df_up.columns if c.startswith("num_discipline_")]
             if disc_cols:
@@ -173,14 +203,18 @@ elif choice == "Batch Scoring":
         df_up["risk_level"] = [risk_level(p) for p in probs]
         df_up["dropout_pred"] = (probs >= 0.5).astype(int)
 
-        st.subheader("Preview")
+        st.subheader("Preview of scored data")
         st.dataframe(df_up.head())
 
         st.download_button(
-            "Download Scored CSV", df_up.to_csv(index=False), "scored_with_risk.csv"
+            "Download Scored CSV",
+            df_up.to_csv(index=False),
+            "scored_with_risk.csv",
         )
 
-# Model report
+# --------------------------------------------------------------------
+# Model Report
+# --------------------------------------------------------------------
 elif choice == "Model Report":
     st.header("Model Report (Appendix A variables)")
 
@@ -190,44 +224,92 @@ elif choice == "Model Report":
 
     probs = model.predict_proba(X)[:, 1]
 
+    # AUC
     try:
         auc = roc_auc_score(y, probs)
         st.metric("AUC", f"{auc:.3f}")
     except Exception:
         st.write("Could not compute AUC")
 
+    # confusion metrics
     preds = (probs >= 0.5).astype(int)
     rep = pd.DataFrame(classification_report(y, preds, output_dict=True)).T
+    st.subheader("Classification report")
     st.dataframe(rep)
 
-# Credits and Repeats dashboard
+    # risk profile distribution like Table 13
+    st.subheader("Risk profile distribution (all labeled students)")
+    risk_series = pd.Series([risk_level(p) for p in probs], name="risk_level")
+    order = [
+        "Low Risk",
+        "Moderately Low Risk",
+        "Moderate Risk",
+        "Moderately High Risk",
+        "High Risk",
+    ]
+    counts = risk_series.value_counts().reindex(order).fillna(0).astype(int)
+    dist_df = counts.rename("count").to_frame()
+    st.table(dist_df)
+    st.bar_chart(dist_df)
+
+# --------------------------------------------------------------------
+# Credits and Repeats Dashboard
+# --------------------------------------------------------------------
 else:
     st.header("Credits and Repeats Dashboard")
 
     df = full_df.copy()
 
-    # make sure columns exist
-    if "HS_PctEarned" not in df.columns or "HS_IsRepeater" not in df.columns:
-        st.error("HS_PctEarned and HS_IsRepeater must be in the data.")
-    else:
-        df["HS_IsRepeater"] = df["HS_IsRepeater"].fillna(0)
+    missing = []
+    for col in ["HS_PctEarned", "HS_IsRepeater"]:
+        if col not in df.columns:
+            missing.append(col)
 
-        col1, col2 = st.columns(2)
+    if missing:
+        st.error(
+            "Missing required columns in data: "
+            + ", ".join(missing)
+            + ". Cannot build credits and repeats dashboard."
+        )
+    else:
+        df["HS_PctEarned"] = df["HS_PctEarned"].astype(float)
+        df["HS_IsRepeater"] = df["HS_IsRepeater"].fillna(0).astype(int)
+
+        # top level metrics
+        col1, col2, col3 = st.columns(3)
         with col1:
             avg_credits = df["HS_PctEarned"].mean()
             st.metric("Average percent of credits earned", f"{avg_credits:.1f}")
-
         with col2:
-            repeat_rate = df["HS_IsRepeater"].mean()
-            st.metric("Percent of students who repeated", f"{100 * repeat_rate:.1f}%")
+            pct_below_80 = (df["HS_PctEarned"] < 0.8).mean() * 100
+            st.metric("Percent of students below 80% credits", f"{pct_below_80:.1f}%")
+        with col3:
+            repeat_rate = df["HS_IsRepeater"].mean() * 100
+            st.metric("Percent of students who repeated a grade", f"{repeat_rate:.1f}%")
 
-        st.subheader("Distribution of credits earned")
-        st.caption("Histogram of HS_PctEarned")
-        st.bar_chart(df["HS_PctEarned"].value_counts().sort_index())
+        # band credits and compute dropout rates by band if target exists
+        if target in df.columns:
+            st.subheader("Dropout rate by percent credits earned")
 
-        st.subheader("Repeater vs credits")
-        st.caption("Average HS_PctEarned by repeater status")
-        grp = df.groupby("HS_IsRepeater")["HS_PctEarned"].mean().rename(
-            {0: "Non repeaters", 1: "Repeaters"}
+            bins = [0.0, 0.2, 0.4, 0.6, 0.8, 1.01]
+            labels = ["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"]
+            df["credit_band"] = pd.cut(
+                df["HS_PctEarned"], bins=bins, labels=labels, include_lowest=True
+            )
+
+            band_rates = (
+                df.groupby("credit_band")[target].mean().reindex(labels) * 100
+            )  # percent dropout
+            band_df = band_rates.rename("Dropout rate (%)").to_frame()
+            st.table(band_df)
+            st.bar_chart(band_df)
+
+        # repeater vs credits (like your previous chart but cleaner)
+        st.subheader("Credits earned by repeater status")
+        grp = (
+            df.groupby("HS_IsRepeater")["HS_PctEarned"]
+            .mean()
+            .rename({0: "Non repeaters", 1: "Repeaters"})
         )
-        st.bar_chart(grp)
+        grp_df = grp.rename("Average HS_PctEarned").to_frame()
+        st.bar_chart(grp_df)
